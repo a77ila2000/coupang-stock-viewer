@@ -2,33 +2,33 @@
 <html lang="ko">
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>쿠팡 재고 모니터 (최신 상태)</title>
+<title>쿠팡 재고 모니터 – 누적 로그</title>
 <style>
   :root { --gap:12px; }
-  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; max-width: 980px; margin: 24px auto; padding: 0 12px; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; max-width: 1000px; margin: 24px auto; padding: 0 12px; }
   h1 { font-size: 20px; margin: 0 0 14px; }
-  .controls { display: grid; grid-template-columns: repeat(auto-fit,minmax(160px,1fr)); gap: var(--gap); align-items: end; margin-bottom: 10px; }
-  label { font-size: 12px; color: #555; display: block; margin-bottom: 4px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap: var(--gap); align-items: end; margin-bottom: 12px; }
+  label { font-size: 12px; color:#555; display:block; margin-bottom:4px; }
   input, select, button { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; }
   button { cursor: pointer; }
-  .row { display: flex; gap: var(--gap); align-items: center; margin: 10px 0 16px; }
+  .row { display:flex; gap:var(--gap); align-items:center; margin:10px 0 16px; }
   .muted { color:#666; font-size:12px; }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { padding: 10px 10px; border-bottom: 1px solid #eee; text-align: left; white-space: nowrap; }
-  th { background: #fafafa; position: sticky; top: 0; }
-  td.status { font-weight: 600; }
+  table { width:100%; border-collapse: collapse; }
+  th, td { padding:10px 10px; border-bottom:1px solid #eee; text-align:left; white-space:nowrap; }
+  th { background:#fafafa; position: sticky; top: 0; }
+  td.status { font-weight:600; }
 </style>
 
-<h1>쿠팡 재고 모니터 (최신 상태)</h1>
+<h1>쿠팡 재고 모니터 – 누적 로그</h1>
 
-<div class="controls">
+<div class="grid">
   <div>
-    <label>SKU</label>
-    <input id="sku" placeholder="예: 61841441">
+    <label>시작일</label>
+    <input id="from" type="datetime-local">
   </div>
   <div>
-    <label>옵션 ID</label>
-    <input id="opt" placeholder="예: 92902832224">
+    <label>종료일</label>
+    <input id="to" type="datetime-local">
   </div>
   <div>
     <label>최대 행 수</label>
@@ -37,10 +37,9 @@
     </select>
   </div>
   <div>
-    <label>자동 새로고침(초)</label>
-    <input id="refreshSec" type="number" min="0" value="0">
+    <label>&nbsp;</label>
+    <button id="btn">조회</button>
   </div>
-  <div><button id="btn">조회</button></div>
 </div>
 
 <div class="row">
@@ -48,90 +47,81 @@
   <span class="muted" id="lastLoaded"></span>
 </div>
 
-<table id="tbl">
+<table>
   <thead>
     <tr>
-      <th>SKU</th>
-      <th>옵션 ID</th>
       <th>상태</th>
       <th>수량</th>
-      <th>업데이트 시각</th>
+      <th>스크랩 시각</th>
     </tr>
   </thead>
-  <tbody></tbody>
+  <tbody id="tbody"></tbody>
 </table>
 
 <script>
-// 프로젝트 URL과 anon 키 반영
+// --- 프로젝트 설정 (이미 공개용 anon SELECT 정책 필요) ---
 const PROJECT_URL = "https://yzzsuwcvipvgueeuelfs.supabase.co";
 const ANON_KEY    = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl6enN1d2N2aXB2Z3VlZXVlbGZzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTQ5NTgyOTcsImV4cCI6MjA3MDUzNDI5N30.TVF7ziLIpyrDX0hhEa7GrrZAxmM4iH1LMsYcOYQuFFk";
 
-// URL 파라미터 반영
-const q = new URLSearchParams(location.search);
-if (q.get("sku")) document.getElementById("sku").value = q.get("sku");
-if (q.get("option")) document.getElementById("opt").value = q.get("option");
+// ---- 유틸: datetime-local <-> ISO ----
+function toISOFromLocalInput(v){
+  if (!v) return null;
+  const d = new Date(v);
+  return isNaN(+d) ? null : d.toISOString();
+}
+function setDefaultLast7Days(){
+  const now = new Date();
+  const start = new Date(now.getTime() - 7*24*60*60*1000);
+  const pad = n => String(n).padStart(2,"0");
+  const fmt = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  document.getElementById("from").value = fmt(start);
+  document.getElementById("to").value   = fmt(now);
+}
 
-async function fetchLatest({ sku, option, limit=50 }) {
-  const url = new URL(PROJECT_URL + "/rest/v1/coupang_stock_state");
-  url.searchParams.set("select", "sku_id,option_id,last_status,last_qty,updated_at");
-  if (sku)    url.searchParams.set("sku_id", `eq.${sku}`);
-  if (option) url.searchParams.set("option_id", `eq.${option}`);
-  url.searchParams.set("order", "updated_at.desc");
+// ---- 데이터 요청 (누적 로그) ----
+async function fetchLogs({ from, to, limit=50 }){
+  const url = new URL(PROJECT_URL + "/rest/v1/coupang_stock_logs");
+  url.searchParams.set("select", "stock_status,stock_qty,scraped_at");
+  if (from) url.searchParams.set("scraped_at", `gte.${from}`);
+  if (to)   url.searchParams.append("scraped_at", `lte.${to}`);
+  url.searchParams.set("order", "scraped_at.desc");
   url.searchParams.set("limit", String(limit));
-
-  const res = await fetch(url, {
-    headers: { apikey: ANON_KEY, Authorization: `Bearer ${ANON_KEY}` }
-  });
+  const res = await fetch(url, { headers: { apikey: ANON_KEY, Authorization: `Bearer ${ANON_KEY}` } });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return await res.json();
 }
 
 function renderRows(rows){
-  const tb = document.querySelector("#tbl tbody");
+  const tb = document.getElementById("tbody");
   tb.innerHTML = "";
   for (const r of rows){
     const tr = document.createElement("tr");
-    const t = s => `<td>${s ?? ""}</td>`;
-    tr.innerHTML = [
-      t(r.sku_id),
-      t(r.option_id),
-      `<td class="status">${r.last_status ?? ""}</td>`,
-      t(r.last_qty ?? ""),
-      t(r.updated_at ? new Date(r.updated_at).toLocaleString() : "")
-    ].join("");
+    tr.innerHTML = `
+      <td class="status">${r.stock_status ?? ""}</td>
+      <td>${r.stock_qty ?? ""}</td>
+      <td>${r.scraped_at ? new Date(r.scraped_at).toLocaleString() : ""}</td>`;
     tb.appendChild(tr);
   }
 }
 
-let timer = null;
 async function runOnce(){
-  const sku = document.getElementById("sku").value.trim();
-  const opt = document.getElementById("opt").value.trim();
-  const limit = Number(document.getElementById("limit").value || 50);
   document.getElementById("msg").textContent = "불러오는 중...";
-  try{
-    const rows = await fetchLatest({ sku, option: opt, limit });
+  try {
+    const fromISO = toISOFromLocalInput(document.getElementById("from").value);
+    const toISO   = toISOFromLocalInput(document.getElementById("to").value);
+    const limit   = Number(document.getElementById("limit").value || 50);
+    const rows = await fetchLogs({ from: fromISO, to: toISO, limit });
     renderRows(rows);
     document.getElementById("msg").textContent = `총 ${rows.length}건`;
     document.getElementById("lastLoaded").textContent = ` | 로드: ` + new Date().toLocaleTimeString();
-    const url = new URL(location.href);
-    if (sku) url.searchParams.set("sku", sku); else url.searchParams.delete("sku");
-    if (opt) url.searchParams.set("option", opt); else url.searchParams.delete("option");
-    history.replaceState(null, "", url);
-  }catch(e){
+  } catch (e){
     document.getElementById("msg").textContent = e.message;
   }
 }
 
-function applyAutoRefresh(){
-  if (timer) { clearInterval(timer); timer = null; }
-  const sec = Number(document.getElementById("refreshSec").value || 0);
-  if (sec > 0) timer = setInterval(runOnce, sec * 1000);
-}
-
-document.getElementById("btn").onclick = () => { runOnce(); applyAutoRefresh(); };
-document.getElementById("refreshSec").addEventListener("change", applyAutoRefresh);
-
+// 초기: 최근 7일 + 50행
+setDefaultLast7Days();
+document.getElementById("btn").onclick = runOnce;
 runOnce();
 </script>
 </html>
